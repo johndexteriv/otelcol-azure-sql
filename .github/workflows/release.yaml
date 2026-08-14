@@ -78,12 +78,13 @@ jobs:
             -C "$(dirname "$stage")" \
             "$(basename "$stage")"
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "stage=$stage" >> "$GITHUB_OUTPUT"
           echo "sbom=collector-builder/dist/${package_base}.spdx.json" >> "$GITHUB_OUTPUT"
 
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
-          path: collector-builder/dist/otelcol-azure-sql
+          path: ${{ steps.package.outputs.stage }}
           format: spdx-json
           output-file: ${{ steps.package.outputs.sbom }}
           upload-artifact: false
