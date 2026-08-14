@@ -1,0 +1,378 @@
+# Native sqlquery receiver configuration. Load after collector.yaml.
+# Query objects are anchored so additional database receivers can reuse them
+# without copying SQL or metric mappings.
+
+receivers:
+  sqlquery/primary:
+    driver: azuresql
+    datasource: "sqlserver://<SQL_SERVER_FQDN>:1433?database=<SQL_DATABASE>&fedauth=ActiveDirectoryManagedIdentity&user+id=${env:AZURE_MANAGED_IDENTITY_CLIENT_ID:-}&encrypt=true&TrustServerCertificate=false"
+
+    # Stock otelcol-contrib SQL-auth replacement:
+    # Remove `driver` and `datasource` above, then uncomment this block.
+    # driver: sqlserver
+    # host: <SQL_SERVER_FQDN>
+    # port: 1433
+    # database: <SQL_DATABASE>
+    # username: ${env:SQL_USERNAME}
+    # password: ${env:SQL_PASSWORD}
+    # additional_params:
+    #   encrypt: "true"
+    #   TrustServerCertificate: "false"
+
+    collection_interval: ${env:SQL_COLLECTION_INTERVAL:-60s}
+    initial_delay: 5s
+    timeout: 30s
+    max_open_conn: 2
+    queries:
+      # Activity batch summary: nine single-row gauges. Age buckets are
+      # cumulative, not mutually exclusive.
+      - &query_activity_batch_summary
+        sql: |
+          WITH target AS (
+            SELECT
+              DB_NAME() AS db_name,
+              CAST(SERVERPROPERTY('ServerName') AS nvarchar(128)) AS sql_server_name
+          )
+          SELECT
+            target.db_name,
+            target.sql_server_name,
+            COALESCE(SUM(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts < 50 THEN 1 ELSE 0 END), 0) AS pending,
+            COALESCE(SUM(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts < 50 AND arbi.UploadDateTime < DATEADD(minute, -5, GETDATE()) THEN 1 ELSE 0 END), 0) AS pending5mins,
+            COALESCE(SUM(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts < 50 AND arbi.UploadDateTime < DATEADD(minute, -15, GETDATE()) THEN 1 ELSE 0 END), 0) AS pending15mins,
+            COALESCE(SUM(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts < 50 AND arbi.UploadDateTime < DATEADD(minute, -60, GETDATE()) THEN 1 ELSE 0 END), 0) AS pending60mins,
+            COALESCE(SUM(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts < 50 AND arbi.UploadDateTime < DATEADD(hour, -24, GETDATE()) THEN 1 ELSE 0 END), 0) AS pending1day,
+            COALESCE(MAX(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts < 50 AND arbi.UploadDateTime < DATEADD(minute, -5, GETDATE()) THEN DATEDIFF(minute, arbi.UploadDateTime, GETDATE()) ELSE 0 END), 0) AS longestwaitmins,
+            COALESCE(MAX(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts < 50 THEN arbi.FailedInsertAttempts END), 0) AS maxfailedattempts,
+            COALESCE(SUM(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts = 50 THEN 1 ELSE 0 END), 0) AS failedlimithit,
+            COALESCE(SUM(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts > 50 THEN 1 ELSE 0 END), 0) AS criticalfailures
+          FROM target
+          LEFT JOIN customer.ActivityRecordBatchInformation arbi ON 1 = 1
+          GROUP BY target.db_name, target.sql_server_name;
+        ignore_null_values: true
+        metrics:
+          - metric_name: activity_batch.pending
+            value_column: pending
+            attribute_columns: [db_name, sql_server_name]
+            data_type: gauge
+            value_type: int
+            description: Pending activity record batches with failed insert attempts below retry limit.
+            unit: "{batch}"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: pending_batch_uploads
+          - metric_name: activity_batch.pending_5m
+            value_column: pending5mins
+            attribute_columns: [db_name, sql_server_name]
+            data_type: gauge
+            value_type: int
+            description: Pending activity record batches older than 5 minutes.
+            unit: "{batch}"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: pending_batch_uploads
+          - metric_name: activity_batch.pending_15m
+            value_column: pending15mins
+            attribute_columns: [db_name, sql_server_name]
+            data_type: gauge
+            value_type: int
+            description: Pending activity record batches older than 15 minutes.
+            unit: "{batch}"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: pending_batch_uploads
+          - metric_name: activity_batch.pending_60m
+            value_column: pending60mins
+            attribute_columns: [db_name, sql_server_name]
+            data_type: gauge
+            value_type: int
+            description: Pending activity record batches older than 60 minutes.
+            unit: "{batch}"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: pending_batch_uploads
+          - metric_name: activity_batch.pending_1d
+            value_column: pending1day
+            attribute_columns: [db_name, sql_server_name]
+            data_type: gauge
+            value_type: int
+            description: Pending activity record batches older than 24 hours.
+            unit: "{batch}"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: pending_batch_uploads
+          - metric_name: activity_batch.longest_wait_minutes
+            value_column: longestwaitmins
+            attribute_columns: [db_name, sql_server_name]
+            data_type: gauge
+            value_type: int
+            description: Longest wait in minutes among pending batches older than 5 minutes.
+            unit: "min"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: pending_batch_uploads
+          - metric_name: activity_batch.max_failed_attempts
+            value_column: maxfailedattempts
+            attribute_columns: [db_name, sql_server_name]
+            data_type: gauge
+            value_type: int
+            description: Maximum failed insert attempts among batches below retry limit.
+            unit: "{attempt}"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: pending_batch_uploads
+          - metric_name: activity_batch.failed_limit_hit
+            value_column: failedlimithit
+            attribute_columns: [db_name, sql_server_name]
+            data_type: gauge
+            value_type: int
+            description: Pending batches that have exactly hit the failed insert retry limit.
+            unit: "{batch}"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: pending_batch_uploads
+          - metric_name: activity_batch.critical_failures
+            value_column: criticalfailures
+            attribute_columns: [db_name, sql_server_name]
+            data_type: gauge
+            value_type: int
+            description: Pending batches above the failed insert retry limit.
+            unit: "{batch}"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: pending_batch_uploads
+
+      # Per-tenant pending summary. `databaseid` remains a result attribute.
+      - &query_tenant_pending
+        sql: |
+          SET NOCOUNT ON;
+          EXEC sp_set_session_context @key=N'IsLogin', @value=1;
+          SELECT
+            MAX(DB_NAME()) AS db_name,
+            MAX(CAST(SERVERPROPERTY('ServerName') AS nvarchar(128))) AS sql_server_name,
+            ISNULL(pt.Reference, t.Reference) AS databaseid,
+            COUNT(arbi.Id) AS pending,
+            SUM(CASE WHEN arbi.UploadDateTime < DATEADD(minute, -5, GETDATE()) THEN 1 ELSE 0 END) AS pending5mins,
+            SUM(CASE WHEN arbi.UploadDateTime < DATEADD(minute, -15, GETDATE()) THEN 1 ELSE 0 END) AS pending15mins,
+            SUM(CASE WHEN arbi.UploadDateTime < DATEADD(minute, -60, GETDATE()) THEN 1 ELSE 0 END) AS pending60mins
+          FROM customer.ActivityRecordBatchInformation arbi WITH(NOLOCK)
+          JOIN customer.Tenancy t WITH(NOLOCK) ON arbi.TenancyId = t.Id
+          LEFT JOIN customer.Tenancy pt WITH(NOLOCK) ON t.ParentTenantId = pt.Id
+          WHERE arbi.InsertDateTime IS NULL
+            AND arbi.FailedInsertAttempts < 50
+          GROUP BY ISNULL(pt.Reference, t.Reference);
+        metrics:
+          - metric_name: activity_batch_tenants.pending
+            value_column: pending
+            attribute_columns: [databaseid, db_name, sql_server_name]
+            data_type: gauge
+            value_type: int
+            description: Pending activity record batches by tenant.
+            unit: "{batch}"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: pending_batch_uploads
+          - metric_name: activity_batch_tenants.pending_5m
+            value_column: pending5mins
+            attribute_columns: [databaseid, db_name, sql_server_name]
+            data_type: gauge
+            value_type: int
+            description: Pending activity record batches older than 5 minutes by tenant.
+            unit: "{batch}"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: pending_batch_uploads
+          - metric_name: activity_batch_tenants.pending_15m
+            value_column: pending15mins
+            attribute_columns: [databaseid, db_name, sql_server_name]
+            data_type: gauge
+            value_type: int
+            description: Pending activity record batches older than 15 minutes by tenant.
+            unit: "{batch}"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: pending_batch_uploads
+          - metric_name: activity_batch_tenants.pending_60m
+            value_column: pending60mins
+            attribute_columns: [databaseid, db_name, sql_server_name]
+            data_type: gauge
+            value_type: int
+            description: Pending activity record batches older than 60 minutes by tenant.
+            unit: "{batch}"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: pending_batch_uploads
+
+      # Azure SQL Database backup health. `dbname` is the DMV-provided label.
+      # The DMV returns no rows on Hyperscale. A value of 999999 means that
+      # backup type has never completed.
+      - &query_azure_sql_backups
+        sql: |
+          WITH target AS (
+            SELECT DB_NAME() AS dbname
+          ),
+          backups AS (
+            SELECT logical_database_name AS dbname, backup_type, backup_finish_date
+            FROM sys.dm_database_backups
+          ),
+          lasts AS (
+            SELECT
+              target.dbname,
+              MAX(CASE WHEN backups.backup_type = 'D' THEN backups.backup_finish_date END) AS lastfull,
+              MAX(CASE WHEN backups.backup_type = 'I' THEN backups.backup_finish_date END) AS lastdiff,
+              MAX(CASE WHEN backups.backup_type = 'L' THEN backups.backup_finish_date END) AS lastlog
+            FROM target
+            LEFT JOIN backups ON backups.dbname = target.dbname
+            GROUP BY target.dbname
+          ),
+          counts AS (
+            SELECT
+              target.dbname,
+              SUM(CASE WHEN backups.backup_type = 'D' AND backups.backup_finish_date >= DATEADD(DAY, -7, GETUTCDATE()) THEN 1 ELSE 0 END) AS fullbackups7dcount,
+              SUM(CASE WHEN backups.backup_type = 'I' AND backups.backup_finish_date >= DATEADD(DAY, -2, GETUTCDATE()) THEN 1 ELSE 0 END) AS diffbackups2dcount,
+              SUM(CASE WHEN backups.backup_type = 'L' AND backups.backup_finish_date >= DATEADD(DAY, -1, GETUTCDATE()) THEN 1 ELSE 0 END) AS logbackups24hcount
+            FROM target
+            LEFT JOIN backups ON backups.dbname = target.dbname
+            GROUP BY target.dbname
+          )
+          SELECT
+            DB_NAME() AS db_name,
+            CAST(SERVERPROPERTY('ServerName') AS nvarchar(128)) AS sql_server_name,
+            l.dbname,
+            ISNULL(CAST(DATEDIFF(HOUR, l.lastfull, GETUTCDATE()) AS FLOAT), 999999) AS lastfullagehours,
+            ISNULL(CAST(DATEDIFF(HOUR, l.lastdiff, GETUTCDATE()) AS FLOAT), 999999) AS lastdiffagehours,
+            ISNULL(CAST(DATEDIFF(HOUR, l.lastlog, GETUTCDATE()) AS FLOAT), 999999) AS lastlogagehours,
+            CAST(CASE WHEN l.lastfull >= DATEADD(DAY, -7, GETUTCDATE()) THEN 1 ELSE 0 END AS FLOAT) AS hasfullbackuplast7days,
+            CAST(CASE WHEN l.lastdiff >= DATEADD(DAY, -2, GETUTCDATE()) THEN 1 ELSE 0 END AS FLOAT) AS hasdiffbackuplast2days,
+            CAST(CASE WHEN l.lastlog >= DATEADD(HOUR, -1, GETUTCDATE()) THEN 1 ELSE 0 END AS FLOAT) AS haslogbackuplast60min,
+            CAST(c.fullbackups7dcount AS FLOAT) AS fullbackups7dcount,
+            CAST(c.diffbackups2dcount AS FLOAT) AS diffbackups2dcount,
+            CAST(c.logbackups24hcount AS FLOAT) AS logbackups24hcount
+          FROM lasts l
+          JOIN counts c ON c.dbname = l.dbname
+          ORDER BY l.dbname;
+        ignore_null_values: true
+        metrics:
+          - metric_name: azure_sql_backups.last_full_age_hours
+            value_column: lastfullagehours
+            attribute_columns: [dbname, db_name, sql_server_name]
+            data_type: gauge
+            value_type: double
+            description: Age in hours of the most recent full backup by database; 999999 means no full backup exists.
+            unit: "h"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: azure_sql_backups
+          - metric_name: azure_sql_backups.last_diff_age_hours
+            value_column: lastdiffagehours
+            attribute_columns: [dbname, db_name, sql_server_name]
+            data_type: gauge
+            value_type: double
+            description: Age in hours of the most recent differential backup by database; 999999 means no differential backup exists.
+            unit: "h"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: azure_sql_backups
+          - metric_name: azure_sql_backups.last_log_age_hours
+            value_column: lastlogagehours
+            attribute_columns: [dbname, db_name, sql_server_name]
+            data_type: gauge
+            value_type: double
+            description: Age in hours of the most recent log backup by database; 999999 means no log backup exists.
+            unit: "h"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: azure_sql_backups
+          - metric_name: azure_sql_backups.has_full_backup_last_7d
+            value_column: hasfullbackuplast7days
+            attribute_columns: [dbname, db_name, sql_server_name]
+            data_type: gauge
+            value_type: double
+            description: 1 when a full backup completed in the last 7 days, otherwise 0.
+            unit: "1"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: azure_sql_backups
+          - metric_name: azure_sql_backups.has_diff_backup_last_2d
+            value_column: hasdiffbackuplast2days
+            attribute_columns: [dbname, db_name, sql_server_name]
+            data_type: gauge
+            value_type: double
+            description: 1 when a differential backup completed in the last 2 days, otherwise 0.
+            unit: "1"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: azure_sql_backups
+          - metric_name: azure_sql_backups.has_log_backup_last_60m
+            value_column: haslogbackuplast60min
+            attribute_columns: [dbname, db_name, sql_server_name]
+            data_type: gauge
+            value_type: double
+            description: 1 when a log backup completed in the last 60 minutes, otherwise 0.
+            unit: "1"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: azure_sql_backups
+          - metric_name: azure_sql_backups.full_backups_7d_count
+            value_column: fullbackups7dcount
+            attribute_columns: [dbname, db_name, sql_server_name]
+            data_type: gauge
+            value_type: double
+            description: Full backup count during the last 7 days by database.
+            unit: "{backup}"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: azure_sql_backups
+          - metric_name: azure_sql_backups.diff_backups_2d_count
+            value_column: diffbackups2dcount
+            attribute_columns: [dbname, db_name, sql_server_name]
+            data_type: gauge
+            value_type: double
+            description: Differential backup count during the last 2 days by database.
+            unit: "{backup}"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: azure_sql_backups
+          - metric_name: azure_sql_backups.log_backups_24h_count
+            value_column: logbackups24hcount
+            attribute_columns: [dbname, db_name, sql_server_name]
+            data_type: gauge
+            value_type: double
+            description: Log backup count during the last 24 hours by database.
+            unit: "{backup}"
+            static_attributes:
+              env: ${env:GROUNDCOVER_ENV_NAME}
+              metric: azure_sql_backups
+
+  # Additional database examples. Uncomment a receiver, replace its connection
+  # placeholders, then add its receiver ID to service.pipelines.metrics.receivers.
+  #
+  # sqlquery/secondary-full:
+  #   driver: azuresql
+  #   datasource: "sqlserver://<SECOND_SQL_SERVER_FQDN>:1433?database=<SECOND_SQL_DATABASE>&fedauth=ActiveDirectoryManagedIdentity&user+id=${env:AZURE_MANAGED_IDENTITY_CLIENT_ID:-}&encrypt=true&TrustServerCertificate=false"
+  #   # Stock SQL-auth replacement: use driver/host/port/database/username/
+  #   # password/additional_params exactly as shown for sqlquery/primary.
+  #   collection_interval: ${env:SQL_COLLECTION_INTERVAL:-60s}
+  #   initial_delay: 5s
+  #   timeout: 30s
+  #   max_open_conn: 2
+  #   queries: [*query_activity_batch_summary, *query_tenant_pending, *query_azure_sql_backups]
+  #
+  # sqlquery/secondary-backups:
+  #   driver: azuresql
+  #   datasource: "sqlserver://<BACKUP_SQL_SERVER_FQDN>:1433?database=<BACKUP_SQL_DATABASE>&fedauth=ActiveDirectoryManagedIdentity&user+id=${env:AZURE_MANAGED_IDENTITY_CLIENT_ID:-}&encrypt=true&TrustServerCertificate=false"
+  #   # Stock SQL-auth replacement: use driver/host/port/database/username/
+  #   # password/additional_params exactly as shown for sqlquery/primary.
+  #   collection_interval: ${env:SQL_COLLECTION_INTERVAL:-60s}
+  #   initial_delay: 5s
+  #   timeout: 30s
+  #   max_open_conn: 2
+  #   queries: [*query_azure_sql_backups]
+
+service:
+  pipelines:
+    metrics:
+      receivers:
+        - sqlquery/primary
+        # Add each uncommented receiver ID here.
+        # - sqlquery/secondary-full
+        # - sqlquery/secondary-backups

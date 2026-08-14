@@ -1,0 +1,16 @@
+# Customer secrets
+config/env
+.env
+*.pem
+*.key
+id_rsa*
+
+# Collector build outputs and downloaded source/tooling
+collector-builder/.build/
+collector-builder/dist/
+
+# Local/editor artifacts
+*.log
+.DS_Store
+__pycache__/
+*.pyc

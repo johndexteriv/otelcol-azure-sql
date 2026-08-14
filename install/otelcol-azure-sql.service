@@ -1,0 +1,46 @@
+[Unit]
+Description=OpenTelemetry Collector for Azure SQL
+Documentation=https://opentelemetry.io/docs/collector/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=otelcol-azure-sql
+Group=otelcol-azure-sql
+EnvironmentFile=/etc/otelcol-azure-sql/env
+ExecStart=/usr/local/bin/otelcol-azure-sql --config=file:/etc/otelcol-azure-sql/collector.yaml --config=file:/etc/otelcol-azure-sql/queries.yaml
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+UMask=0027
+
+# The collector needs outbound DNS, groundcover, Azure SQL, and Azure IMDS
+# access. These controls intentionally do not isolate or deny its network.
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectClock=true
+ProtectProc=invisible
+ProcSubset=all
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RemoveIPC=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

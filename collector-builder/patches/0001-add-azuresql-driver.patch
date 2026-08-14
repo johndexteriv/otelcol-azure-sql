@@ -1,0 +1,34 @@
+diff --git a/internal/sqlquery/driver.go b/internal/sqlquery/driver.go
+--- a/internal/sqlquery/driver.go
++++ b/internal/sqlquery/driver.go
+@@ -4,6 +4,9 @@
+ package sqlquery // import "github.com/open-telemetry/opentelemetry-collector-contrib/internal/sqlquery"
+ 
+ const (
++	// DriverAzureSQL is registered by github.com/microsoft/go-mssqldb/azuread and
++	// enables Microsoft Entra authentication through the fedauth parameter.
++	DriverAzureSQL   = "azuresql"
+ 	DriverClickHouse = "clickhouse"
+ 	DriverHDB        = "hdb"
+ 	DriverMySQL      = "mysql"
+@@ -17,7 +20,7 @@ const (
+ // IsValidDriver checks if the given driver name is supported
+ func IsValidDriver(driver string) bool {
+ 	switch driver {
+-	case DriverClickHouse, DriverHDB, DriverMySQL, DriverOracle, DriverPostgres, DriverSnowflake, DriverSQLServer, DriverTDS:
++	case DriverAzureSQL, DriverClickHouse, DriverHDB, DriverMySQL, DriverOracle, DriverPostgres, DriverSnowflake, DriverSQLServer, DriverTDS:
+ 		return true
+ 	default:
+ 		return false
+diff --git a/receiver/sqlqueryreceiver/internal/database_sql.go b/receiver/sqlqueryreceiver/internal/database_sql.go
+--- a/receiver/sqlqueryreceiver/internal/database_sql.go
++++ b/receiver/sqlqueryreceiver/internal/database_sql.go
+@@ -13,6 +13,8 @@ import (
+ 	_ "github.com/go-sql-driver/mysql"
+ 	_ "github.com/lib/pq"
+ 	_ "github.com/microsoft/go-mssqldb"
++	// Register the "azuresql" driver used for Microsoft Entra authentication.
++	_ "github.com/microsoft/go-mssqldb/azuread"
+ 	_ "github.com/microsoft/go-mssqldb/integratedauth/krb5"
+ 	_ "github.com/sijms/go-ora/v2"
+ 	_ "github.com/snowflakedb/gosnowflake/v2"

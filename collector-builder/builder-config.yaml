@@ -1,0 +1,34 @@
+# Portable OCB manifest template. collector-builder/build.sh resolves the
+# placeholders and contrib's local module replacement closure into
+# .build/builder-config.yaml; never add machine-specific paths here.
+dist:
+  module: github.com/johndexteriv/otelcol-azure-sql
+  name: otelcol-azure-sql
+  description: OpenTelemetry Collector with Azure SQL Microsoft Entra authentication
+  output_path: __OUTPUT_PATH__
+  version: __DIST_VERSION__
+
+# sqlqueryreceiver is built from the patched, pinned contrib checkout.
+receivers:
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/sqlqueryreceiver __CONTRIB_VERSION__
+    path: __CONTRIB_ROOT__/receiver/sqlqueryreceiver
+
+processors:
+  - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor __BETA_VERSION__
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourceprocessor __CONTRIB_VERSION__
+    path: __CONTRIB_ROOT__/processor/resourceprocessor
+  - gomod: go.opentelemetry.io/collector/processor/batchprocessor __BETA_VERSION__
+
+exporters:
+  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter __BETA_VERSION__
+  - gomod: go.opentelemetry.io/collector/exporter/debugexporter __BETA_VERSION__
+
+extensions:
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckextension __CONTRIB_VERSION__
+    path: __CONTRIB_ROOT__/extension/healthcheckextension
+
+providers:
+  - gomod: go.opentelemetry.io/collector/confmap/provider/envprovider __STABLE_VERSION__
+  - gomod: go.opentelemetry.io/collector/confmap/provider/fileprovider __STABLE_VERSION__
+
+# The generated manifest appends `replaces` for transitive local contrib modules.

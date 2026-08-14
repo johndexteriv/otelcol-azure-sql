@@ -1,0 +1,52 @@
+# CI-only managed-identity config. build-and-validate replaces every
+# __PLACEHOLDER__ in a temporary copy before invoking `otelcol validate`.
+extensions:
+  health_check:
+    endpoint: 127.0.0.1:13133
+
+receivers:
+  sqlquery/azure_sql:
+    driver: azuresql
+    datasource: "sqlserver://__SQL_SERVER_FQDN__:1433?database=ci&fedauth=ActiveDirectoryManagedIdentity&encrypt=true"
+    collection_interval: 60s
+    queries:
+      - sql: SELECT CAST(1 AS INT) AS value;
+        metrics:
+          - metric_name: azure_sql.ci
+            value_column: value
+            data_type: gauge
+            value_type: int
+
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 64
+  resource:
+    attributes:
+      - key: service.name
+        value: __GROUNDCOVER_SERVICE_NAME__
+        action: upsert
+  batch:
+
+exporters:
+  otlp_http:
+    endpoint: __GROUNDCOVER_OTLP_ENDPOINT__
+    headers:
+      apikey: __GROUNDCOVER_INGESTION_KEY__
+  debug:
+    verbosity: basic
+
+service:
+  extensions:
+    - health_check
+  pipelines:
+    metrics:
+      receivers:
+        - sqlquery/azure_sql
+      processors:
+        - memory_limiter
+        - resource
+        - batch
+      exporters:
+        - otlp_http
+        - debug

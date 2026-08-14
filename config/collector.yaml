@@ -1,0 +1,79 @@
+# Production Collector configuration. Load this file together with queries.yaml.
+# The OTLP/HTTP exporter appends /v1/metrics to the HTTPS base URL.
+
+extensions:
+  health_check:
+    endpoint: 127.0.0.1:13133
+    path: /healthz
+
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_percentage: 75
+    spike_limit_percentage: 20
+
+  resource/groundcover:
+    attributes:
+      - key: service.name
+        value: ${env:GROUNDCOVER_SERVICE_NAME}
+        action: upsert
+      - key: env_name
+        value: ${env:GROUNDCOVER_ENV_NAME}
+        action: upsert
+      - key: gc_env_type
+        value: vm
+        action: upsert
+      - key: source
+        value: otel-collector
+        action: upsert
+      - key: cloud.provider
+        value: azure
+        action: upsert
+      - key: deployment.environment.name
+        value: ${env:GROUNDCOVER_ENV_NAME}
+        action: upsert
+      - key: db.system
+        value: mssql
+        action: upsert
+
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+
+exporters:
+  otlp_http/groundcover:
+    endpoint: ${env:GROUNDCOVER_OTLP_ENDPOINT}
+    headers:
+      apikey: ${env:GROUNDCOVER_INGESTION_KEY}
+    compression: gzip
+    timeout: 30s
+    tls:
+      insecure: false
+      min_version: "1.2"
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+    sending_queue:
+      enabled: true
+      num_consumers: 2
+      queue_size: 1000
+
+service:
+  extensions:
+    - health_check
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: basic
+  pipelines:
+    metrics:
+      processors:
+        - memory_limiter
+        - resource/groundcover
+        - batch
+      exporters:
+              - otlp_http/groundcover

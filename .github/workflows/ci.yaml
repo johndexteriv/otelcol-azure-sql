@@ -1,0 +1,255 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-checks:
+    name: Static checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes shellcheck
+
+      - name: Shellcheck first-party scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts=()
+          while IFS= read -r -d '' file; do
+            case "$file" in
+              scripts/*|build/*|install/*|collector-builder/*)
+                scripts+=("$file")
+                ;;
+            esac
+          done < <(git ls-files -z -- '*.sh')
+          if ((${#scripts[@]})); then
+            shellcheck "${scripts[@]}"
+          fi
+
+      - name: Validate YAML syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          yaml_files=()
+          while IFS= read -r -d '' file; do
+            yaml_files+=("$file")
+          done < <(git ls-files -z -- '*.yaml' '*.yml')
+          ruby -e 'require "yaml"; ARGV.each { |path| YAML.parse_file(path) }' "${yaml_files[@]}"
+
+      - name: Scan first-party files for accidental local values
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib
+          import re
+          import subprocess
+
+          tracked = subprocess.check_output(["git", "ls-files", "-z"]).decode().split("\0")
+          developer_path = re.compile(
+              r"/Users/[^/\s]+/|/home/[^/\s]+/|[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s]+"
+          )
+          unresolved_assignment = re.compile(
+              r"(?im)^[^#\n]*(?:=|:\s+)[\"']?"
+              r"(?:REPLACE_ME|CHANGEME|YOUR_[A-Z0-9_]+|<INSERT_[A-Z0-9_]+>)"
+          )
+          failures = []
+          for name in tracked:
+              if not name or name.startswith(".git/"):
+                  continue
+              if name in {".github/workflows/ci.yaml", ".env.example"}:
+                  continue
+              path = pathlib.Path(name)
+              try:
+                  text = path.read_text()
+              except (UnicodeDecodeError, OSError):
+                  continue
+              if developer_path.search(text):
+                  failures.append(f"{name}: developer-specific absolute path")
+              if unresolved_assignment.search(text):
+                  failures.append(f"{name}: unresolved assignment placeholder")
+          if failures:
+              raise SystemExit("\n".join(failures))
+          PY
+
+      - name: Verify generated metric mappings
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib
+          import re
+
+          expected = {
+              "activity_batch.pending",
+              "activity_batch.pending_5m",
+              "activity_batch.pending_15m",
+              "activity_batch.pending_60m",
+              "activity_batch.pending_1d",
+              "activity_batch.longest_wait_minutes",
+              "activity_batch.max_failed_attempts",
+              "activity_batch.failed_limit_hit",
+              "activity_batch.critical_failures",
+              "activity_batch_tenants.pending",
+              "activity_batch_tenants.pending_5m",
+              "activity_batch_tenants.pending_15m",
+              "activity_batch_tenants.pending_60m",
+              "azure_sql_backups.last_full_age_hours",
+              "azure_sql_backups.last_diff_age_hours",
+              "azure_sql_backups.last_log_age_hours",
+              "azure_sql_backups.has_full_backup_last_7d",
+              "azure_sql_backups.has_diff_backup_last_2d",
+              "azure_sql_backups.has_log_backup_last_60m",
+              "azure_sql_backups.full_backups_7d_count",
+              "azure_sql_backups.diff_backups_2d_count",
+              "azure_sql_backups.log_backups_24h_count",
+          }
+          path = pathlib.Path("config/queries.yaml")
+          actual = re.findall(
+              r"^\s*-\s+metric_name:\s+([a-zA-Z0-9_.-]+)\s*$",
+              path.read_text(),
+              re.MULTILINE,
+          )
+          if len(actual) != 22 or set(actual) != expected:
+              raise SystemExit(
+                  f"{path}: expected exactly 22 canonical metric mappings, found {len(actual)}"
+              )
+          print(f"verified {len(expected)} canonical metric mappings")
+          PY
+
+  build-and-validate:
+    name: Build and validate linux/amd64
+    runs-on: ubuntu-latest
+    needs: static-checks
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Read pinned Go version
+        id: versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          . collector-builder/versions.env
+          echo "go=${GO_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ steps.versions.outputs.go }}
+          cache: false
+
+      - name: Build custom Collector
+        env:
+          TARGET_ARCH: amd64
+        run: ./collector-builder/build.sh
+
+      - name: Validate managed-identity configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          temporary_dir="$(mktemp -d)"
+          trap 'rm -rf "$temporary_dir"' EXIT
+          cp config/collector.yaml "$temporary_dir/collector.yaml"
+          cp config/queries.yaml "$temporary_dir/queries.yaml"
+          python3 - "$temporary_dir/queries.yaml" <<'PY'
+          import pathlib
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          text = path.read_text()
+          text = text.replace("<SQL_SERVER_FQDN>", "ci-sql.example.invalid")
+          text = text.replace("<SQL_DATABASE>", "ci_database")
+          path.write_text(text)
+          PY
+          export AZURE_MANAGED_IDENTITY_CLIENT_ID=""
+          export SQL_COLLECTION_INTERVAL=60s
+          export GROUNDCOVER_OTLP_ENDPOINT=https://example.invalid
+          export GROUNDCOVER_INGESTION_KEY=ci_not_a_real_key
+          export GROUNDCOVER_ENV_NAME=ci
+          export GROUNDCOVER_SERVICE_NAME=otelcol-azure-sql-ci
+          ./collector-builder/dist/otelcol-azure-sql \
+            validate \
+            --config="file:${temporary_dir}/collector.yaml" \
+            --config="file:${temporary_dir}/queries.yaml"
+
+      - name: Validate stock SQL-auth configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          . collector-builder/versions.env
+          temporary_dir="$(mktemp -d)"
+          trap 'rm -rf "$temporary_dir"' EXIT
+          base="https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${OTEL_VERSION}"
+          artifact="otelcol-contrib_${OTEL_VERSION}_linux_amd64.tar.gz"
+          curl --fail --location --silent --show-error \
+            --output "$temporary_dir/$artifact" "$base/$artifact"
+          curl --fail --location --silent --show-error \
+            --output "$temporary_dir/$artifact.sha256" "$base/$artifact.sha256"
+          expected="$(grep -Eo '[A-Fa-f0-9]{64}' "$temporary_dir/$artifact.sha256" | awk 'NR == 1 { print tolower($0) }')"
+          actual="$(sha256sum "$temporary_dir/$artifact" | awk '{ print $1 }')"
+          test "$actual" = "$expected"
+          member="$(tar -tzf "$temporary_dir/$artifact" | awk -F/ '$NF == "otelcol-contrib" { print; exit }')"
+          test -n "$member"
+          tar -xOzf "$temporary_dir/$artifact" "$member" > "$temporary_dir/otelcol-contrib"
+          chmod 0755 "$temporary_dir/otelcol-contrib"
+          cp config/collector.yaml "$temporary_dir/collector.yaml"
+          cp config/queries.yaml "$temporary_dir/queries.yaml"
+          python3 - "$temporary_dir/queries.yaml" <<'PY'
+          import pathlib
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          text = path.read_text()
+          old = '''    driver: azuresql
+              datasource: "sqlserver://<SQL_SERVER_FQDN>:1433?database=<SQL_DATABASE>&fedauth=ActiveDirectoryManagedIdentity&user+id=${env:AZURE_MANAGED_IDENTITY_CLIENT_ID:-}&encrypt=true&TrustServerCertificate=false"
+          '''
+          new = '''    driver: sqlserver
+              host: sql.example.invalid
+              port: 1433
+              database: customerdb
+              username: ${env:SQL_USERNAME}
+              password: ${env:SQL_PASSWORD}
+              additional_params:
+                encrypt: "true"
+                TrustServerCertificate: "false"
+          '''
+          if old not in text:
+              raise SystemExit("managed-identity connection template changed")
+          path.write_text(text.replace(old, new, 1))
+          PY
+          export SQL_USERNAME=ci_user
+          export SQL_PASSWORD=ci_password_not_a_secret
+          export SQL_COLLECTION_INTERVAL=60s
+          export GROUNDCOVER_OTLP_ENDPOINT=https://example.invalid
+          export GROUNDCOVER_INGESTION_KEY=ci_not_a_real_key
+          export GROUNDCOVER_ENV_NAME=ci
+          export GROUNDCOVER_SERVICE_NAME=otelcol-azure-sql-ci
+          "$temporary_dir/otelcol-contrib" \
+            validate \
+            --config="file:${temporary_dir}/collector.yaml" \
+            --config="file:${temporary_dir}/queries.yaml"
+
+      - name: Upload custom Collector
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: otelcol-azure-sql-linux-amd64
+          path: collector-builder/dist/otelcol-azure-sql
+          if-no-files-found: error
+          retention-days: 7

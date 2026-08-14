@@ -1,0 +1,12 @@
+# Optional troubleshooting overlay. Load after collector.yaml and queries.yaml.
+
+exporters:
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    metrics:
+      exporters:
+        - otlp_http/groundcover
+        - debug
