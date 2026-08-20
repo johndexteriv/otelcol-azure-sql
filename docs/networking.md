@@ -140,7 +140,7 @@ Set placeholders in the shell:
 
 ```bash
 SQL_FQDN=<server>.database.windows.net
-GC_HOST=<byoc-endpoint-hostname>
+GC_HOST=exampleendpoint.grcv.io
 ```
 
 ### DNS

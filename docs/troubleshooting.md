@@ -418,7 +418,7 @@ sudo journalctl -u otelcol-azure-sql --since '15 minutes ago' --no-pager
 
 Fix:
 
-- Set `GROUNDCOVER_OTLP_ENDPOINT=https://<byoc-endpoint>` with no
+- Set `GROUNDCOVER_OTLP_ENDPOINT=https://exampleendpoint.grcv.io` with no
   `/v1/metrics`.
 - Use port 443.
 - Put the Third Party key in `apikey`.
@@ -450,8 +450,8 @@ Fix:
 - Search `activity_batch_pending`, not `activity_batch.pending`.
 - Search `azure_sql_backups_has_full_backup_last_7d_ratio` for the unit-`1`
   boolean.
-- Clear UI filters, then filter with `env`, `service_name`, `env_type`, `source`,
-  and `db_name`.
+- Clear UI filters, then filter with `env`, `service_name`, `gc_env_type`,
+  `source`, and `db_name`. The label arrives as `gc_env_type`, not `env_type`.
 - Confirm the exporter/resource configuration supplies `env_name`,
   `service.name`, `gc_env_type`, and `source`.
 

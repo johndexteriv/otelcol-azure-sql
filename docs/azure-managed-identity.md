@@ -185,6 +185,23 @@ database.
 | Any database in an elastic pool | Logical server admin, Entra admin, or `##MS_ServerStateReader##` | Rows when backup history exists |
 | Hyperscale | No permission changes this behavior | Zero rows; Hyperscale uses snapshot-based backups |
 
+Treat the Basic/S0/S1 row as the requirement to design for, not as a reliable
+gate. End-to-end testing on an S0 database found a plain contained user holding
+only `CONNECT` and `VIEW DATABASE STATE` returning backup rows, so the DMV can be
+more permissive in practice than the tier documentation promises. Granting
+`##MS_ServerStateReader##` is still the correct and portable choice: it works on
+every tier, and a configuration that only happens to work is one Azure change
+away from returning zero rows and silently reporting `999999` backup ages.
+
+Two behaviors to expect while granting it:
+
+- `CREATE LOGIN` in virtual `master` is rate-limited. A burst of attempts returns
+  `Msg 40602 Could not create login. Please try again later.` Wait and retry.
+- `SUSER_ID()` returns `NULL` in Azure SQL even for logins that exist, so do not
+  use it to test whether a login is present. Query `sys.server_principals`
+  instead. Always pass `sqlcmd -b`, or a failure like the throttling error above
+  exits 0 and looks like a clean run.
+
 `##MS_ServerStateReader##` is an Azure SQL logical-server role in the **virtual
 `master` database**. The identity needs a login/user in virtual `master`, role
 membership there, and a user in every target database. Use the provided

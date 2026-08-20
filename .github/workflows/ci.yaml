@@ -69,6 +69,7 @@ jobs:
               r"(?im)^[^#\n]*(?:=|:\s+)[\"']?"
               r"(?:REPLACE_ME|CHANGEME|YOUR_[A-Z0-9_]+|<INSERT_[A-Z0-9_]+>)"
           )
+          groundcover_key = re.compile(r"gcik_[A-Za-z0-9_]{8,}")
           failures = []
           for name in tracked:
               if not name or name.startswith(".git/"):
@@ -84,6 +85,8 @@ jobs:
                   failures.append(f"{name}: developer-specific absolute path")
               if unresolved_assignment.search(text):
                   failures.append(f"{name}: unresolved assignment placeholder")
+              if groundcover_key.search(text):
+                  failures.append(f"{name}: groundcover ingestion key")
           if failures:
               raise SystemExit("\n".join(failures))
           PY
