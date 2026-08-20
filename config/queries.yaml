@@ -1,4 +1,11 @@
 # Native sqlquery receiver configuration. Load after collector.yaml.
+# This is the only place customer SQL and SQL-to-metric mappings belong.
+#
+# Any T-SQL that returns numeric columns can become a metric: a plain SELECT, a
+# CTE, a DMV read, or an EXEC of a procedure that returns a rowset. The active
+# query below reads Azure SQL backup history and works on any Azure SQL
+# Database, so it is safe to keep while you add your own.
+#
 # Query objects are anchored so additional database receivers can reuse them
 # without copying SQL or metric mappings.
 
@@ -24,183 +31,35 @@ receivers:
     timeout: 30s
     max_open_conn: 2
     queries:
-      # Activity batch summary: nine single-row gauges. Age buckets are
-      # cumulative, not mutually exclusive.
-      - &query_activity_batch_summary
-        sql: |
-          WITH target AS (
-            SELECT
-              DB_NAME() AS db_name,
-              CAST(SERVERPROPERTY('ServerName') AS nvarchar(128)) AS sql_server_name
-          )
-          SELECT
-            target.db_name,
-            target.sql_server_name,
-            COALESCE(SUM(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts < 50 THEN 1 ELSE 0 END), 0) AS pending,
-            COALESCE(SUM(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts < 50 AND arbi.UploadDateTime < DATEADD(minute, -5, GETDATE()) THEN 1 ELSE 0 END), 0) AS pending5mins,
-            COALESCE(SUM(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts < 50 AND arbi.UploadDateTime < DATEADD(minute, -15, GETDATE()) THEN 1 ELSE 0 END), 0) AS pending15mins,
-            COALESCE(SUM(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts < 50 AND arbi.UploadDateTime < DATEADD(minute, -60, GETDATE()) THEN 1 ELSE 0 END), 0) AS pending60mins,
-            COALESCE(SUM(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts < 50 AND arbi.UploadDateTime < DATEADD(hour, -24, GETDATE()) THEN 1 ELSE 0 END), 0) AS pending1day,
-            COALESCE(MAX(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts < 50 AND arbi.UploadDateTime < DATEADD(minute, -5, GETDATE()) THEN DATEDIFF(minute, arbi.UploadDateTime, GETDATE()) ELSE 0 END), 0) AS longestwaitmins,
-            COALESCE(MAX(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts < 50 THEN arbi.FailedInsertAttempts END), 0) AS maxfailedattempts,
-            COALESCE(SUM(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts = 50 THEN 1 ELSE 0 END), 0) AS failedlimithit,
-            COALESCE(SUM(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts > 50 THEN 1 ELSE 0 END), 0) AS criticalfailures
-          FROM target
-          LEFT JOIN customer.ActivityRecordBatchInformation arbi ON 1 = 1
-          GROUP BY target.db_name, target.sql_server_name;
-        ignore_null_values: true
-        metrics:
-          - metric_name: activity_batch.pending
-            value_column: pending
-            attribute_columns: [db_name, sql_server_name]
-            data_type: gauge
-            value_type: int
-            description: Pending activity record batches with failed insert attempts below retry limit.
-            unit: "{batch}"
-            static_attributes:
-              env: ${env:GROUNDCOVER_ENV_NAME}
-              metric: pending_batch_uploads
-          - metric_name: activity_batch.pending_5m
-            value_column: pending5mins
-            attribute_columns: [db_name, sql_server_name]
-            data_type: gauge
-            value_type: int
-            description: Pending activity record batches older than 5 minutes.
-            unit: "{batch}"
-            static_attributes:
-              env: ${env:GROUNDCOVER_ENV_NAME}
-              metric: pending_batch_uploads
-          - metric_name: activity_batch.pending_15m
-            value_column: pending15mins
-            attribute_columns: [db_name, sql_server_name]
-            data_type: gauge
-            value_type: int
-            description: Pending activity record batches older than 15 minutes.
-            unit: "{batch}"
-            static_attributes:
-              env: ${env:GROUNDCOVER_ENV_NAME}
-              metric: pending_batch_uploads
-          - metric_name: activity_batch.pending_60m
-            value_column: pending60mins
-            attribute_columns: [db_name, sql_server_name]
-            data_type: gauge
-            value_type: int
-            description: Pending activity record batches older than 60 minutes.
-            unit: "{batch}"
-            static_attributes:
-              env: ${env:GROUNDCOVER_ENV_NAME}
-              metric: pending_batch_uploads
-          - metric_name: activity_batch.pending_1d
-            value_column: pending1day
-            attribute_columns: [db_name, sql_server_name]
-            data_type: gauge
-            value_type: int
-            description: Pending activity record batches older than 24 hours.
-            unit: "{batch}"
-            static_attributes:
-              env: ${env:GROUNDCOVER_ENV_NAME}
-              metric: pending_batch_uploads
-          - metric_name: activity_batch.longest_wait_minutes
-            value_column: longestwaitmins
-            attribute_columns: [db_name, sql_server_name]
-            data_type: gauge
-            value_type: int
-            description: Longest wait in minutes among pending batches older than 5 minutes.
-            unit: "min"
-            static_attributes:
-              env: ${env:GROUNDCOVER_ENV_NAME}
-              metric: pending_batch_uploads
-          - metric_name: activity_batch.max_failed_attempts
-            value_column: maxfailedattempts
-            attribute_columns: [db_name, sql_server_name]
-            data_type: gauge
-            value_type: int
-            description: Maximum failed insert attempts among batches below retry limit.
-            unit: "{attempt}"
-            static_attributes:
-              env: ${env:GROUNDCOVER_ENV_NAME}
-              metric: pending_batch_uploads
-          - metric_name: activity_batch.failed_limit_hit
-            value_column: failedlimithit
-            attribute_columns: [db_name, sql_server_name]
-            data_type: gauge
-            value_type: int
-            description: Pending batches that have exactly hit the failed insert retry limit.
-            unit: "{batch}"
-            static_attributes:
-              env: ${env:GROUNDCOVER_ENV_NAME}
-              metric: pending_batch_uploads
-          - metric_name: activity_batch.critical_failures
-            value_column: criticalfailures
-            attribute_columns: [db_name, sql_server_name]
-            data_type: gauge
-            value_type: int
-            description: Pending batches above the failed insert retry limit.
-            unit: "{batch}"
-            static_attributes:
-              env: ${env:GROUNDCOVER_ENV_NAME}
-              metric: pending_batch_uploads
-
-      # Per-tenant pending summary. `databaseid` remains a result attribute.
-      - &query_tenant_pending
-        sql: |
-          SET NOCOUNT ON;
-          EXEC sp_set_session_context @key=N'IsLogin', @value=1;
-          SELECT
-            MAX(DB_NAME()) AS db_name,
-            MAX(CAST(SERVERPROPERTY('ServerName') AS nvarchar(128))) AS sql_server_name,
-            ISNULL(pt.Reference, t.Reference) AS databaseid,
-            COUNT(arbi.Id) AS pending,
-            SUM(CASE WHEN arbi.UploadDateTime < DATEADD(minute, -5, GETDATE()) THEN 1 ELSE 0 END) AS pending5mins,
-            SUM(CASE WHEN arbi.UploadDateTime < DATEADD(minute, -15, GETDATE()) THEN 1 ELSE 0 END) AS pending15mins,
-            SUM(CASE WHEN arbi.UploadDateTime < DATEADD(minute, -60, GETDATE()) THEN 1 ELSE 0 END) AS pending60mins
-          FROM customer.ActivityRecordBatchInformation arbi WITH(NOLOCK)
-          JOIN customer.Tenancy t WITH(NOLOCK) ON arbi.TenancyId = t.Id
-          LEFT JOIN customer.Tenancy pt WITH(NOLOCK) ON t.ParentTenantId = pt.Id
-          WHERE arbi.InsertDateTime IS NULL
-            AND arbi.FailedInsertAttempts < 50
-          GROUP BY ISNULL(pt.Reference, t.Reference);
-        metrics:
-          - metric_name: activity_batch_tenants.pending
-            value_column: pending
-            attribute_columns: [databaseid, db_name, sql_server_name]
-            data_type: gauge
-            value_type: int
-            description: Pending activity record batches by tenant.
-            unit: "{batch}"
-            static_attributes:
-              env: ${env:GROUNDCOVER_ENV_NAME}
-              metric: pending_batch_uploads
-          - metric_name: activity_batch_tenants.pending_5m
-            value_column: pending5mins
-            attribute_columns: [databaseid, db_name, sql_server_name]
-            data_type: gauge
-            value_type: int
-            description: Pending activity record batches older than 5 minutes by tenant.
-            unit: "{batch}"
-            static_attributes:
-              env: ${env:GROUNDCOVER_ENV_NAME}
-              metric: pending_batch_uploads
-          - metric_name: activity_batch_tenants.pending_15m
-            value_column: pending15mins
-            attribute_columns: [databaseid, db_name, sql_server_name]
-            data_type: gauge
-            value_type: int
-            description: Pending activity record batches older than 15 minutes by tenant.
-            unit: "{batch}"
-            static_attributes:
-              env: ${env:GROUNDCOVER_ENV_NAME}
-              metric: pending_batch_uploads
-          - metric_name: activity_batch_tenants.pending_60m
-            value_column: pending60mins
-            attribute_columns: [databaseid, db_name, sql_server_name]
-            data_type: gauge
-            value_type: int
-            description: Pending activity record batches older than 60 minutes by tenant.
-            unit: "{batch}"
-            static_attributes:
-              env: ${env:GROUNDCOVER_ENV_NAME}
-              metric: pending_batch_uploads
+      # Add your own query here. Any T-SQL that returns numeric columns works:
+      # SELECT, CTEs, DMV reads, or EXEC of a procedure returning a rowset.
+      # See docs/adding-custom-queries.md for the full field reference.
+      #
+      # - sql: |
+      #     SELECT
+      #       COUNT_BIG(*) AS open_orders,
+      #       CAST(MAX(DATEDIFF(SECOND, OrderDate, SYSUTCDATETIME())) AS FLOAT)
+      #         AS oldest_seconds,
+      #       Region
+      #     FROM dbo.Orders
+      #     WHERE ShippedDate IS NULL
+      #     GROUP BY Region;
+      #   ignore_null_values: true
+      #   metrics:
+      #     - metric_name: app.orders.open
+      #       value_column: open_orders
+      #       attribute_columns: [Region]
+      #       data_type: gauge
+      #       value_type: int
+      #       description: Unshipped orders by region.
+      #       unit: "{order}"
+      #     - metric_name: app.orders.oldest_open
+      #       value_column: oldest_seconds
+      #       attribute_columns: [Region]
+      #       data_type: gauge
+      #       value_type: double
+      #       description: Age of the oldest unshipped order by region.
+      #       unit: s
 
       # Azure SQL Database backup health. `dbname` is the DMV-provided label.
       # The DMV returns no rows on Hyperscale. A value of 999999 means that
@@ -343,10 +202,222 @@ receivers:
               env: ${env:GROUNDCOVER_ENV_NAME}
               metric: azure_sql_backups
 
+      # ---------------------------------------------------------------------
+      # OPT-IN EXAMPLE: activity-batch backlog. Not a package feature.
+      #
+      # These two queries are one application's monitoring, kept here as a
+      # worked example of a multi-table, multi-metric query pair. They are
+      # commented out because they fail with `Invalid object name` unless the
+      # connected database already contains this schema:
+      #
+      # customer.ActivityRecordBatchInformation with columns Id, TenancyId,
+      # UploadDateTime, InsertDateTime, FailedInsertAttempts.
+      # customer.Tenancy with columns Id, Reference, ParentTenantId.
+      #
+      # They also assume a failed-insert retry limit of 50 and, for the tenant
+      # query, that row-level security keys off
+      # `sp_set_session_context @key=N'IsLogin'`. Adjust both to your own
+      # schema rather than adopting them verbatim.
+      #
+      # The collector principal needs `SELECT ON SCHEMA::customer`; the SQL
+      # user scripts in sql/ grant it only when that schema already exists, so
+      # rerun the relevant script after creating the schema. To exercise these
+      # on a scratch database, seed it with
+      # sql/test-fixtures/seed-customer-schema.sql.
+      #
+      # To enable: strip the `# ` prefix from every line of the two query
+      # blocks below. That also restores the
+      # `query_activity_batch_summary` and `query_tenant_pending` anchors for
+      # the secondary receivers at the bottom of this file.
+      # ---------------------------------------------------------------------
+
+      # Activity batch summary: nine single-row gauges. Age buckets are
+      # cumulative, not mutually exclusive.
+      # - &query_activity_batch_summary
+      #   sql: |
+      #     WITH target AS (
+      #       SELECT
+      #         DB_NAME() AS db_name,
+      #         CAST(SERVERPROPERTY('ServerName') AS nvarchar(128)) AS sql_server_name
+      #     )
+      #     SELECT
+      #       target.db_name,
+      #       target.sql_server_name,
+      #       COALESCE(SUM(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts < 50 THEN 1 ELSE 0 END), 0) AS pending,
+      #       COALESCE(SUM(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts < 50 AND arbi.UploadDateTime < DATEADD(minute, -5, GETDATE()) THEN 1 ELSE 0 END), 0) AS pending5mins,
+      #       COALESCE(SUM(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts < 50 AND arbi.UploadDateTime < DATEADD(minute, -15, GETDATE()) THEN 1 ELSE 0 END), 0) AS pending15mins,
+      #       COALESCE(SUM(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts < 50 AND arbi.UploadDateTime < DATEADD(minute, -60, GETDATE()) THEN 1 ELSE 0 END), 0) AS pending60mins,
+      #       COALESCE(SUM(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts < 50 AND arbi.UploadDateTime < DATEADD(hour, -24, GETDATE()) THEN 1 ELSE 0 END), 0) AS pending1day,
+      #       COALESCE(MAX(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts < 50 AND arbi.UploadDateTime < DATEADD(minute, -5, GETDATE()) THEN DATEDIFF(minute, arbi.UploadDateTime, GETDATE()) ELSE 0 END), 0) AS longestwaitmins,
+      #       COALESCE(MAX(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts < 50 THEN arbi.FailedInsertAttempts END), 0) AS maxfailedattempts,
+      #       COALESCE(SUM(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts = 50 THEN 1 ELSE 0 END), 0) AS failedlimithit,
+      #       COALESCE(SUM(CASE WHEN arbi.InsertDateTime IS NULL AND arbi.FailedInsertAttempts > 50 THEN 1 ELSE 0 END), 0) AS criticalfailures
+      #     FROM target
+      #     LEFT JOIN customer.ActivityRecordBatchInformation arbi ON 1 = 1
+      #     GROUP BY target.db_name, target.sql_server_name;
+      #   ignore_null_values: true
+      #   metrics:
+      #     - metric_name: activity_batch.pending
+      #       value_column: pending
+      #       attribute_columns: [db_name, sql_server_name]
+      #       data_type: gauge
+      #       value_type: int
+      #       description: Pending activity record batches with failed insert attempts below retry limit.
+      #       unit: "{batch}"
+      #       static_attributes:
+      #         env: ${env:GROUNDCOVER_ENV_NAME}
+      #         metric: pending_batch_uploads
+      #     - metric_name: activity_batch.pending_5m
+      #       value_column: pending5mins
+      #       attribute_columns: [db_name, sql_server_name]
+      #       data_type: gauge
+      #       value_type: int
+      #       description: Pending activity record batches older than 5 minutes.
+      #       unit: "{batch}"
+      #       static_attributes:
+      #         env: ${env:GROUNDCOVER_ENV_NAME}
+      #         metric: pending_batch_uploads
+      #     - metric_name: activity_batch.pending_15m
+      #       value_column: pending15mins
+      #       attribute_columns: [db_name, sql_server_name]
+      #       data_type: gauge
+      #       value_type: int
+      #       description: Pending activity record batches older than 15 minutes.
+      #       unit: "{batch}"
+      #       static_attributes:
+      #         env: ${env:GROUNDCOVER_ENV_NAME}
+      #         metric: pending_batch_uploads
+      #     - metric_name: activity_batch.pending_60m
+      #       value_column: pending60mins
+      #       attribute_columns: [db_name, sql_server_name]
+      #       data_type: gauge
+      #       value_type: int
+      #       description: Pending activity record batches older than 60 minutes.
+      #       unit: "{batch}"
+      #       static_attributes:
+      #         env: ${env:GROUNDCOVER_ENV_NAME}
+      #         metric: pending_batch_uploads
+      #     - metric_name: activity_batch.pending_1d
+      #       value_column: pending1day
+      #       attribute_columns: [db_name, sql_server_name]
+      #       data_type: gauge
+      #       value_type: int
+      #       description: Pending activity record batches older than 24 hours.
+      #       unit: "{batch}"
+      #       static_attributes:
+      #         env: ${env:GROUNDCOVER_ENV_NAME}
+      #         metric: pending_batch_uploads
+      #     - metric_name: activity_batch.longest_wait_minutes
+      #       value_column: longestwaitmins
+      #       attribute_columns: [db_name, sql_server_name]
+      #       data_type: gauge
+      #       value_type: int
+      #       description: Longest wait in minutes among pending batches older than 5 minutes.
+      #       unit: "min"
+      #       static_attributes:
+      #         env: ${env:GROUNDCOVER_ENV_NAME}
+      #         metric: pending_batch_uploads
+      #     - metric_name: activity_batch.max_failed_attempts
+      #       value_column: maxfailedattempts
+      #       attribute_columns: [db_name, sql_server_name]
+      #       data_type: gauge
+      #       value_type: int
+      #       description: Maximum failed insert attempts among batches below retry limit.
+      #       unit: "{attempt}"
+      #       static_attributes:
+      #         env: ${env:GROUNDCOVER_ENV_NAME}
+      #         metric: pending_batch_uploads
+      #     - metric_name: activity_batch.failed_limit_hit
+      #       value_column: failedlimithit
+      #       attribute_columns: [db_name, sql_server_name]
+      #       data_type: gauge
+      #       value_type: int
+      #       description: Pending batches that have exactly hit the failed insert retry limit.
+      #       unit: "{batch}"
+      #       static_attributes:
+      #         env: ${env:GROUNDCOVER_ENV_NAME}
+      #         metric: pending_batch_uploads
+      #     - metric_name: activity_batch.critical_failures
+      #       value_column: criticalfailures
+      #       attribute_columns: [db_name, sql_server_name]
+      #       data_type: gauge
+      #       value_type: int
+      #       description: Pending batches above the failed insert retry limit.
+      #       unit: "{batch}"
+      #       static_attributes:
+      #         env: ${env:GROUNDCOVER_ENV_NAME}
+      #         metric: pending_batch_uploads
+
+      # Per-tenant pending summary. `databaseid` remains a result attribute.
+      # - &query_tenant_pending
+      #   sql: |
+      #     SET NOCOUNT ON;
+      #     EXEC sp_set_session_context @key=N'IsLogin', @value=1;
+      #     SELECT
+      #       MAX(DB_NAME()) AS db_name,
+      #       MAX(CAST(SERVERPROPERTY('ServerName') AS nvarchar(128))) AS sql_server_name,
+      #       ISNULL(pt.Reference, t.Reference) AS databaseid,
+      #       COUNT(arbi.Id) AS pending,
+      #       SUM(CASE WHEN arbi.UploadDateTime < DATEADD(minute, -5, GETDATE()) THEN 1 ELSE 0 END) AS pending5mins,
+      #       SUM(CASE WHEN arbi.UploadDateTime < DATEADD(minute, -15, GETDATE()) THEN 1 ELSE 0 END) AS pending15mins,
+      #       SUM(CASE WHEN arbi.UploadDateTime < DATEADD(minute, -60, GETDATE()) THEN 1 ELSE 0 END) AS pending60mins
+      #     FROM customer.ActivityRecordBatchInformation arbi WITH(NOLOCK)
+      #     JOIN customer.Tenancy t WITH(NOLOCK) ON arbi.TenancyId = t.Id
+      #     LEFT JOIN customer.Tenancy pt WITH(NOLOCK) ON t.ParentTenantId = pt.Id
+      #     WHERE arbi.InsertDateTime IS NULL
+      #       AND arbi.FailedInsertAttempts < 50
+      #     GROUP BY ISNULL(pt.Reference, t.Reference);
+      #   metrics:
+      #     - metric_name: activity_batch_tenants.pending
+      #       value_column: pending
+      #       attribute_columns: [databaseid, db_name, sql_server_name]
+      #       data_type: gauge
+      #       value_type: int
+      #       description: Pending activity record batches by tenant.
+      #       unit: "{batch}"
+      #       static_attributes:
+      #         env: ${env:GROUNDCOVER_ENV_NAME}
+      #         metric: pending_batch_uploads
+      #     - metric_name: activity_batch_tenants.pending_5m
+      #       value_column: pending5mins
+      #       attribute_columns: [databaseid, db_name, sql_server_name]
+      #       data_type: gauge
+      #       value_type: int
+      #       description: Pending activity record batches older than 5 minutes by tenant.
+      #       unit: "{batch}"
+      #       static_attributes:
+      #         env: ${env:GROUNDCOVER_ENV_NAME}
+      #         metric: pending_batch_uploads
+      #     - metric_name: activity_batch_tenants.pending_15m
+      #       value_column: pending15mins
+      #       attribute_columns: [databaseid, db_name, sql_server_name]
+      #       data_type: gauge
+      #       value_type: int
+      #       description: Pending activity record batches older than 15 minutes by tenant.
+      #       unit: "{batch}"
+      #       static_attributes:
+      #         env: ${env:GROUNDCOVER_ENV_NAME}
+      #         metric: pending_batch_uploads
+      #     - metric_name: activity_batch_tenants.pending_60m
+      #       value_column: pending60mins
+      #       attribute_columns: [databaseid, db_name, sql_server_name]
+      #       data_type: gauge
+      #       value_type: int
+      #       description: Pending activity record batches older than 60 minutes by tenant.
+      #       unit: "{batch}"
+      #       static_attributes:
+      #         env: ${env:GROUNDCOVER_ENV_NAME}
+      #         metric: pending_batch_uploads
+
   # Additional database examples. Uncomment a receiver, replace its connection
   # placeholders, then add its receiver ID to service.pipelines.metrics.receivers.
   #
-  # sqlquery/secondary-full:
+  # The query list can name any anchor defined above. Only
+  # `*query_azure_sql_backups` is anchored by default; enabling the commented
+  # activity-batch example restores `*query_activity_batch_summary` and
+  # `*query_tenant_pending` for use here too.
+  #
+  # sqlquery/secondary:
   #   driver: azuresql
   #   datasource: "sqlserver://<SECOND_SQL_SERVER_FQDN>:1433?database=<SECOND_SQL_DATABASE>&fedauth=ActiveDirectoryManagedIdentity&user+id=${env:AZURE_MANAGED_IDENTITY_CLIENT_ID:-}&encrypt=true&TrustServerCertificate=false"
   #   # Stock SQL-auth replacement: use driver/host/port/database/username/
@@ -355,7 +426,7 @@ receivers:
   #   initial_delay: 5s
   #   timeout: 30s
   #   max_open_conn: 2
-  #   queries: [*query_activity_batch_summary, *query_tenant_pending, *query_azure_sql_backups]
+  #   queries: [*query_azure_sql_backups]
   #
   # sqlquery/secondary-backups:
   #   driver: azuresql
@@ -374,5 +445,5 @@ service:
       receivers:
         - sqlquery/primary
         # Add each uncommented receiver ID here.
-        # - sqlquery/secondary-full
+        # - sqlquery/secondary
         # - sqlquery/secondary-backups

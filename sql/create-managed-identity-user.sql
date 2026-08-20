@@ -1,11 +1,13 @@
 -- Run against EACH monitored user database as the Microsoft Entra administrator.
 -- Example: sqlcmd ... -d <SQL_DATABASE> -v principal_name="<MANAGED_IDENTITY_DISPLAY_NAME>"
 --
--- This grants only the permissions used by config/queries.yaml: SELECT on the
--- customer schema when that schema exists, plus VIEW DATABASE STATE. A
--- backup-only database without customer.* therefore receives no application
--- table access. If grant-server-state-reader.sql has created a virtual-master
--- login, the database user is mapped to that login; otherwise it is contained.
+-- This grants VIEW DATABASE STATE, which the default backup query needs, plus
+-- SELECT on the customer schema when that schema exists, for the opt-in
+-- activity-batch example in config/queries.yaml. A database without customer.*
+-- therefore receives no application table access. Queries you add against other
+-- schemas need their own SELECT grants, which this script does not guess at. If
+-- grant-server-state-reader.sql has created a virtual-master login, the database
+-- user is mapped to that login; otherwise it is contained.
 
 SET NOCOUNT ON;
 SET XACT_ABORT ON;

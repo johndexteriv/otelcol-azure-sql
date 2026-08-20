@@ -434,7 +434,8 @@ environment_label=${GROUNDCOVER_ENV_NAME:-'<environment from /etc/otelcol-azure-
 cat <<EOF
 groundcover:
   1. Wait two SQL_COLLECTION_INTERVAL periods after the service becomes healthy.
-  2. Open groundcover Metrics and query: activity_batch_pending
+  2. Open groundcover Metrics and query: azure_sql_backups_last_full_age_hours
+     (or a metric name from your own queries in queries.yaml)
   3. Filter service_name = "${service_label}" and env = "${environment_label}".
   4. Group by db_name and confirm each configured database reports recent points.
 

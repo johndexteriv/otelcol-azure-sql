@@ -132,11 +132,18 @@ For SAMI, use the VM identity display name; for UAMI, use the UAMI name:
 
 ```sql
 CREATE USER [<managed-identity-name>] FROM EXTERNAL PROVIDER;
-GRANT SELECT ON SCHEMA::[customer] TO [<managed-identity-name>];
 GRANT VIEW DATABASE STATE TO [<managed-identity-name>];
 ```
 
-If query 2 calls a stored procedure, grant only that procedure:
+`VIEW DATABASE STATE` is all the default backup query needs. Grant `SELECT` per
+schema for the queries you add, for example the `customer` schema used by the
+opt-in activity-batch example:
+
+```sql
+GRANT SELECT ON SCHEMA::[customer] TO [<managed-identity-name>];
+```
+
+If a query calls a stored procedure, grant only that procedure:
 
 ```sql
 GRANT EXECUTE ON OBJECT::[customer].[GetActivityBatchTenantMetrics]
@@ -144,8 +151,8 @@ TO [<managed-identity-name>];
 ```
 
 Avoid `db_owner`, `db_datawriter`, and broad `CONTROL` grants. `db_datareader` is
-broader than `SELECT ON SCHEMA::customer`; use it only if the intended query set
-really needs every user table and view.
+broader than a per-schema `SELECT`; use it only if the intended query set really
+needs every user table and view.
 
 Contained users are database-scoped. Repeat the user creation and grants in every
 database targeted by a named receiver in `config/queries.yaml`, including

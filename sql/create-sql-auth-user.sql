@@ -1,7 +1,8 @@
 -- Stock-Collector fallback only. Run against EACH monitored user database as an
--- administrator. SELECT is granted only when the customer schema exists, so a
--- backup-only database receives no application table access. Prefer
--- create-managed-identity-user.sql for normal operation.
+-- administrator. VIEW DATABASE STATE covers the default backup query. SELECT on
+-- the customer schema is granted only when that schema exists, for the opt-in
+-- activity-batch example; queries you add against other schemas need their own
+-- SELECT grants. Prefer create-managed-identity-user.sql for normal operation.
 --
 -- Example:
 --   sqlcmd ... -d <SQL_DATABASE> \

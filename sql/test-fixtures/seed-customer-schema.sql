@@ -1,6 +1,10 @@
--- Test fixture only. Creates the minimal `customer` schema that the
--- activity-batch queries in config/queries.yaml read, then seeds rows that
+-- Test fixture only. Creates the minimal `customer` schema that the opt-in
+-- activity-batch example in config/queries.yaml reads, then seeds rows that
 -- span every age bucket and retry-limit branch so no metric is trivially zero.
+--
+-- That example ships commented out; uncomment it after running this, and rerun
+-- sql/create-managed-identity-user.sql so the collector principal picks up the
+-- SELECT ON SCHEMA::customer grant this script's schema makes possible.
 --
 -- Production databases already own these tables. Never run this against one.
 --

@@ -317,7 +317,9 @@ Likely cause:
 
 - T-SQL syntax or an identifier is wrong.
 - The receiver connects to the wrong database.
-- A full-query receiver points to a database without the application schema.
+- A receiver runs a query against a database that lacks the objects it needs.
+  Enabling the commented activity-batch example on a database without the
+  `customer` schema does exactly this.
 - SQL was copied somewhere other than `config/queries.yaml` and drifted.
 
 Verify:
@@ -329,20 +331,26 @@ Verify:
 Fix:
 
 - Keep the corrected SQL and mapping only in `config/queries.yaml`.
-- Change databases without the application schema to a backup-only receiver that
-  references only `*query_azure_sql_backups`.
+- Give that database its own receiver with a reduced query list containing only
+  the queries its schema supports. `*query_azure_sql_backups` runs anywhere.
 - Validate and restart.
 
 ## Permission denied while a query runs
 
 Likely cause:
 
-- `SELECT ON SCHEMA::customer` is missing.
+- A query you added reads a schema the collector principal has no `SELECT` on.
+  The `sql/` scripts grant only `VIEW DATABASE STATE` and, where the schema
+  exists, `SELECT ON SCHEMA::customer`.
+- `SELECT ON SCHEMA::customer` is missing, which affects only queries against
+  that schema, including the opt-in activity-batch example. The grant is skipped
+  when the schema did not exist at the time the script ran.
 - A stored procedure needs a separate `EXECUTE` grant.
 - Backup DMV permission differs for the database service objective.
 - Grants were applied in another database.
 
-Verify as an administrator in the target database:
+Verify as an administrator in the target database, substituting the schema your
+query reads:
 
 ```sql
 SELECT
@@ -353,7 +361,9 @@ SELECT
 
 Fix:
 
-- Apply the least-privilege template in every target database.
+- Apply the least-privilege template in every target database, then rerun it if
+  the schema was created afterwards.
+- Grant `SELECT` on each additional schema your own queries read.
 - Grant `EXECUTE` only on the required procedure when used.
 - For Basic, S0, S1, or elastic-pool databases, use the documented
   `##MS_ServerStateReader##` virtual-master pattern.
@@ -440,14 +450,17 @@ Likely cause:
 Verify by searching broad metric prefixes:
 
 ```text
-activity_batch_
-activity_batch_tenants_
 azure_sql_backups_
 ```
 
+Add the prefix of each query you added to `config/queries.yaml`. With the
+commented activity-batch example enabled, that is `activity_batch_` and
+`activity_batch_tenants_`.
+
 Fix:
 
-- Search `activity_batch_pending`, not `activity_batch.pending`.
+- Search `azure_sql_backups_last_full_age_hours`, not
+  `azure_sql_backups.last_full_age_hours`. Dots become underscores.
 - Search `azure_sql_backups_has_full_backup_last_7d_ratio` for the unit-`1`
   boolean.
 - Clear UI filters, then filter with `env`, `service_name`, `gc_env_type`,

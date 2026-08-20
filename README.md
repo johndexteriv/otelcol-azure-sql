@@ -56,19 +56,26 @@ username and password instead, read
 [Appendix: SQL username and password fallback](#appendix-sql-username-and-password-fallback)
 before you start.
 
-### Required application schema
+### No application schema required
 
-The supplied queries are not all self-contained. 13 of the 22 metrics come from
-two application tables that this package does not create:
+The shipped configuration needs nothing from your schema. Its one active query
+reads `sys.dm_database_backups`, so it produces the nine `azure_sql_backups`
+metrics on any Azure SQL Database.
+
+Everything beyond that is yours to write. Any T-SQL that returns numeric columns
+becomes metrics; see [Write your own queries](#write-your-own-queries).
+
+`config/queries.yaml` also carries a commented opt-in example, the
+activity-batch backlog pair, which produces 13 more metrics. It is one
+application's monitoring rather than a package feature, and it requires two
+tables this package does not create:
 
 - `customer.ActivityRecordBatchInformation` with `Id`, `TenancyId`,
   `UploadDateTime`, `InsertDateTime`, and `FailedInsertAttempts`.
 - `customer.Tenancy` with `Id`, `Reference`, and `ParentTenantId`.
 
-A database without the `customer` schema can still report the nine
-`azure_sql_backups` metrics; see [Multiple databases](#multiple-databases) for
-the backups-only receiver shape. To exercise the full metric set on a scratch
-database, `sql/test-fixtures/seed-customer-schema.sql` creates these tables and
+Enable it only on a database that has that schema. To try it on a scratch
+database, `sql/test-fixtures/seed-customer-schema.sql` creates those tables and
 seeds rows spanning every age bucket. It is a test fixture; never run it against
 a real application database.
 
@@ -158,10 +165,13 @@ sqlcmd -b \
 
 `principal_name` is the identity **display name** from step 1, not its client ID.
 
-The script grants `SELECT ON SCHEMA::customer` only when that schema already
-exists. On a database where the application schema is created later, rerun 3b
+The script grants `VIEW DATABASE STATE`, which is what the default backup query
+needs. It additionally grants `SELECT ON SCHEMA::customer` when that schema
+already exists, for the opt-in activity-batch example. If you enable that
+example, or write your own queries against a schema created later, rerun 3b
 afterwards to pick up the grant; the script is idempotent and skips the user it
-already created.
+already created. Queries against other schemas need their own `SELECT` grants,
+which this script does not guess at.
 
 Contained users are database-scoped, so repeat 3b in every target database,
 including backup-only databases. See the
@@ -277,7 +287,12 @@ Replace `<SQL_SERVER_FQDN>` and `<SQL_DATABASE>` in the `sqlquery/primary`
 `datasource` line. The installer scans every active line of `config/env`,
 `collector.yaml`, `queries.yaml`, and `debug.yaml` and aborts on any remaining
 `<NAME>` placeholder, so this edit is mandatory. Placeholders inside commented
-lines are ignored, so the commented example receivers can stay as shipped.
+lines are ignored, so the commented starter template, opt-in example, and example
+receivers can all stay as shipped.
+
+That is the only mandatory edit. The backup query works as-is, so you can install
+now and add your own queries later; see
+[Write your own queries](#write-your-own-queries).
 
 To scrape more than one database, add a receiver per database now and follow
 [Multiple databases](#multiple-databases).
@@ -313,8 +328,8 @@ prove, and [Troubleshooting](docs/troubleshooting.md) for the repair commands.
 
 ### 11. Verify in groundcover
 
-In groundcover Metrics, search for `activity_batch_pending`, then filter by any
-of these labels:
+In groundcover Metrics, search for `azure_sql_backups_last_full_age_hours`, then
+filter by any of these labels:
 
 - `env` and `env_name`, both carrying `GROUNDCOVER_ENV_NAME`
 - `service_name` from `service.name`
@@ -398,28 +413,58 @@ applies to `CUSTOM_COLLECTOR_VERSION`/`STOCK_COLLECTOR_VERSION` against
 
 ## Queries and metrics
 
-The supplied query intent is:
+Active by default: **Azure SQL backup health**, nine gauges labeled by database.
+Backup age uses `999999` when a backup type has never occurred, so stale-backup
+alerts fail safe. The query reads `sys.dm_database_backups`, which is Azure SQL
+Database-specific but present on every Azure SQL Database.
+
+Shipped commented out, as an opt-in example requiring the `customer` schema:
 
 1. Activity-batch backlog summary: nine gauges.
-2. Per-tenant backlog: four gauges labeled by `databaseid`.
-3. Azure SQL backup health: nine gauges labeled by database.
-
-The pending-age buckets are cumulative. Backup age uses `999999` when a backup
-type has never occurred, so stale-backup alerts fail safe. The backup query reads
-`sys.dm_database_backups`, which is Azure SQL Database-specific.
+2. Per-tenant backlog: four gauges labeled by `databaseid`. Its pending-age
+   buckets are cumulative.
 
 groundcover stores Prometheus-compatible names. Expect dots to become
 underscores; metrics with unit `1` can receive a `_ratio` suffix. For example:
 
-- `activity_batch.pending` → `activity_batch_pending`
-- `activity_batch_tenants.pending` → `activity_batch_tenants_pending`
 - `azure_sql_backups.last_full_age_hours` →
   `azure_sql_backups_last_full_age_hours`
 - `azure_sql_backups.has_full_backup_last_7d` →
   `azure_sql_backups_has_full_backup_last_7d_ratio`
+- `activity_batch.pending` → `activity_batch_pending`
+- `activity_batch_tenants.pending` → `activity_batch_tenants_pending`
 
-See [Adding custom queries](docs/adding-custom-queries.md) for the native schema,
-complete metric list, and change workflow.
+### Write your own queries
+
+`config/queries.yaml` is the only place customer SQL belongs. Add a query object
+to `sqlquery/primary`'s `queries:` list; the file ships a commented starter
+template to copy.
+
+Any T-SQL that returns numeric columns can become a metric: a plain `SELECT`, a
+CTE, a DMV read, or an `EXEC` of a procedure that returns a rowset. Each returned
+row becomes one datapoint per mapping, `value_column` names a numeric column,
+`attribute_columns` copies text columns to labels, and `static_attributes` adds
+constants.
+
+```yaml
+      - sql: |
+          SELECT COUNT_BIG(*) AS open_orders, Region
+          FROM dbo.Orders WHERE ShippedDate IS NULL GROUP BY Region;
+        metrics:
+          - metric_name: app.orders.open
+            value_column: open_orders
+            attribute_columns: [Region]
+            data_type: gauge
+            value_type: int
+```
+
+The collector principal from step 3 gets `VIEW DATABASE STATE` and, where the
+schema exists, `SELECT ON SCHEMA::customer`. A query reading anything else needs
+its own `SELECT` grant.
+
+See [Adding custom queries](docs/adding-custom-queries.md) for the full field
+reference, numeric-column and label guidance, the complete metric list, and the
+validate-and-restart workflow.
 
 ## Multiple databases
 
@@ -428,9 +473,10 @@ Azure SQL databases are isolated,
 and `sys.dm_database_backups` is scoped to the connected database; one connection
 cannot collect backup rows for every database on the logical server.
 
-- For a database with the application schema, reuse all three anchored queries.
-- For a database without that schema, reuse only
-  `*query_azure_sql_backups`.
+- Reuse `*query_azure_sql_backups`, the one query anchored by default, in every
+  receiver.
+- Give a receiver its own query objects when that database needs metrics the
+  others do not.
 - Add every receiver ID to `service.pipelines.metrics.receivers`, which is at the
   bottom of `config/queries.yaml`. A receiver that is defined but not listed
   there is silently never scraped.
@@ -438,14 +484,16 @@ cannot collect backup rows for every database on the logical server.
   different databases remain separate series.
 - Remember that `max_open_conn` applies per receiver.
 
-`config/queries.yaml` ships `sqlquery/secondary-full` and
-`sqlquery/secondary-backups` as commented templates. Uncomment one, replace its
-connection placeholders, and uncomment the matching pipeline entry.
+`config/queries.yaml` ships `sqlquery/secondary` and `sqlquery/secondary-backups`
+as commented templates. Uncomment one, replace its connection placeholders, and
+uncomment the matching pipeline entry.
 
-The YAML anchors (`&query_...`) are defined on `sqlquery/primary`. If you reduce
-`sqlquery/primary` to a backups-only database by deleting the other two query
-blocks, their anchors disappear and no other receiver can reference them. Keep
-the database that has the application schema as `sqlquery/primary`.
+YAML anchors (`&query_...`) are defined on `sqlquery/primary`, and an alias can
+only reference an anchor that is active. `*query_azure_sql_backups` is the only
+one available as shipped; enabling the commented activity-batch example restores
+`*query_activity_batch_summary` and `*query_tenant_pending` for reuse too. Keep
+anchor definitions on `sqlquery/primary` so later receivers can alias them, and
+do not delete a query block that another receiver aliases.
 
 Every database added here also needs its own SQL principal and grants from
 step 3.
@@ -638,8 +686,9 @@ Follow [Installation](#installation) with these changes:
   and `datasource:` lines**, then uncomment the documented `sqlserver` block below
   them. Leaving both drivers active fails the installer's profile compatibility
   check, and so does leaving one receiver on `azuresql`. The commented
-  `sqlquery/secondary-*` templates carry only a pointer comment, so copy the
-  `sqlserver` block from `sqlquery/primary` into each one by hand:
+  `sqlquery/secondary` and `sqlquery/secondary-backups` templates carry only a
+  pointer comment, so copy the `sqlserver` block from `sqlquery/primary` into each
+  one by hand:
 
   ```yaml
   driver: sqlserver

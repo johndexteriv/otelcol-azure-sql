@@ -99,7 +99,20 @@ jobs:
           import pathlib
           import re
 
-          expected = {
+          # Active by default: the backup query works on any Azure SQL Database.
+          expected_active = {
+              "azure_sql_backups.last_full_age_hours",
+              "azure_sql_backups.last_diff_age_hours",
+              "azure_sql_backups.last_log_age_hours",
+              "azure_sql_backups.has_full_backup_last_7d",
+              "azure_sql_backups.has_diff_backup_last_2d",
+              "azure_sql_backups.has_log_backup_last_60m",
+              "azure_sql_backups.full_backups_7d_count",
+              "azure_sql_backups.diff_backups_2d_count",
+              "azure_sql_backups.log_backups_24h_count",
+          }
+          # Commented opt-in example: requires the customer.* application schema.
+          expected_example = {
               "activity_batch.pending",
               "activity_batch.pending_5m",
               "activity_batch.pending_15m",
@@ -113,27 +126,36 @@ jobs:
               "activity_batch_tenants.pending_5m",
               "activity_batch_tenants.pending_15m",
               "activity_batch_tenants.pending_60m",
-              "azure_sql_backups.last_full_age_hours",
-              "azure_sql_backups.last_diff_age_hours",
-              "azure_sql_backups.last_log_age_hours",
-              "azure_sql_backups.has_full_backup_last_7d",
-              "azure_sql_backups.has_diff_backup_last_2d",
-              "azure_sql_backups.has_log_backup_last_60m",
-              "azure_sql_backups.full_backups_7d_count",
-              "azure_sql_backups.diff_backups_2d_count",
-              "azure_sql_backups.log_backups_24h_count",
           }
           path = pathlib.Path("config/queries.yaml")
-          actual = re.findall(
-              r"^\s*-\s+metric_name:\s+([a-zA-Z0-9_.-]+)\s*$",
-              path.read_text(),
-              re.MULTILINE,
+          text = path.read_text()
+          active = re.findall(
+              r"^\s*-\s+metric_name:\s+([a-zA-Z0-9_.-]+)\s*$", text, re.MULTILINE
           )
-          if len(actual) != 22 or set(actual) != expected:
-              raise SystemExit(
-                  f"{path}: expected exactly 22 canonical metric mappings, found {len(actual)}"
+          commented = set(
+              re.findall(
+                  r"^\s*#\s*-\s+metric_name:\s+([a-zA-Z0-9_.-]+)\s*$",
+                  text,
+                  re.MULTILINE,
               )
-          print(f"verified {len(expected)} canonical metric mappings")
+          )
+          failures = []
+          if len(active) != len(expected_active) or set(active) != expected_active:
+              failures.append(
+                  f"expected exactly {len(expected_active)} active metric mappings "
+                  f"({sorted(expected_active)}), found {len(active)}: {sorted(active)}"
+              )
+          missing_example = sorted(expected_example - commented)
+          if missing_example:
+              failures.append(
+                  f"commented activity-batch example is missing: {missing_example}"
+              )
+          if failures:
+              raise SystemExit(f"{path}: " + "; ".join(failures))
+          print(
+              f"verified {len(expected_active)} active and "
+              f"{len(expected_example)} commented example metric mappings"
+          )
           PY
 
   build-and-validate:
